@@ -1,13 +1,13 @@
-'''
+"""
 Created on 26.01.2013
 Modified on 23.02.2016
 @author: ivan
-'''
+"""
 
 #TODO: Create another file
 import json
 
-from flask import Flask, request, Response, g, jsonify, _request_ctx_stack, redirect
+from flask import Flask, request, Response, g, jsonify, _request_ctx_stack, redirect, send_from_directory
 from flask.ext.restful import Resource, Api, abort
 from werkzeug.exceptions import NotFound,  UnsupportedMediaType
 
@@ -17,20 +17,311 @@ import database
 #Constants for hypermedia formats and profiles
 COLLECTIONJSON = "application/vnd.collection+json"
 HAL = "application/hal+json"
-FORUM_USER_PROFILE ="/profiles/user-profile"
-FORUM_MESSAGE_PROFILE = "/profiles/message-profile"
+MASON = "application/vnd.mason+json"
+JSON = "application/json"
+FORUM_USER_PROFILE ="/profiles/user-profile/"
+FORUM_MESSAGE_PROFILE = "/profiles/message-profile/"
 ATOM_THREAD_PROFILE = "https://tools.ietf.org/html/rfc4685"
+
+# Fill these in
 APIARY_PROFILES_URL = "STUDENT_APIARY_PROJECT/#reference/profiles/"
+APIARY_RELS_URL = "STUDENT_APIARY_PROJECT/#reference/link-relations/"
+
+
+USER_SCHEMA_URL = "/forum/schema/user/"
+LINK_RELATIONS_URL = "/forum/link-relations/"
 
 #Define the application and the api
-app = Flask(__name__)
+app = Flask(__name__, static_folder="static", static_url_path="/.")
 app.debug = True
 # Set the database Engine. In order to modify the database file (e.g. for
 # testing) provide the database path   app.config to modify the
 #database to be used (for instance for testing)
-app.config.update({'Engine': database.Engine()})
+app.config.update({"Engine": database.Engine()})
 #Start the RESTful API.
 api = Api(app)
+
+
+# These two classes below are how we make producing the resource representation
+# JSON documents manageable and resilient to errors. As noted, our mediatype is
+# Mason. Similar solutions can easily be implemented for other mediatypes. 
+
+class MasonObject(dict):    
+    """
+    A convenience class for managing dictionaries that represent Mason 
+    objects. It provides nice shorthands for inserting some of the more
+    elements into the object but mostly is just a parent for the much more
+    useful subclass defined next. This class is generic in the sense that it 
+    does not contain any application specific implementation details.
+    """
+
+    def add_error(self, title, details):
+        """
+        Adds an error element to the object. Should only be used for the root
+        object, and only in error scenarios. 
+        
+        Note: Mason allows more than one string in the @messages property (it's
+        in fact an array). However we are being lazy and supporting just one 
+        message. 
+        
+        : param str title: Short title for the error
+        : param str details: Longer human-readable description        
+        """        
+        
+        self["@error"] = {
+            "@message": title,
+            "@messages": [details],
+        }
+    
+    def add_namespace(self, ns, uri):
+        """
+        Adds a namespace element to the object. A namespace defines where our
+        link relations are coming from. The URI can be an address where 
+        developers can find information about our link relations. 
+        
+        : param str ns: the namespace prefix
+        : param str uri: the identifier URI of the namespace
+        """
+        
+        if "@namespaces" not in self:
+            self["@namespaces"] = {}
+        
+        self["@namespaces"][ns] = {
+            "name": uri
+        }
+        
+    def add_control(self, ctrl_name, **kwargs):
+        """
+        Adds a control property to an object. Also adds the @controls property
+        if it doesn't exist on the object yet. Technically only certain 
+        properties are allowed for kwargs but again we're being lazy and don't 
+        perform any checking.
+        
+        The allowed properties can be found from here 
+        https://github.com/JornWildt/Mason/blob/master/Documentation/Mason-draft-2.md
+        
+        : param str ctrl_name: name of the control (including namespace if any)        
+        """
+                
+        if "@controls" not in self:
+            self["@controls"] = {}
+        
+        self["@controls"][ctrl_name] = kwargs
+        
+
+class ForumObject(MasonObject):    
+    """
+    A convenience subclass of MasonObject that defines a bunch of shorthand 
+    methods for inserting application specific objects into the document. This
+    class is particularly useful for adding control objects that are largely
+    context independent, and defining them in the resource methods would add a 
+    lot of noise to our code - not to mention making inconsistencies much more
+    likely!
+    
+    In the forum code this object should always be used for root document as 
+    well as any items in a collection type resource. 
+    """
+    
+    def __init__(self, **kwargs):
+        """
+        Calls dictionary init method with any received keyword arguments. Adds
+        the controls key afterwards because hypermedia without controls is not 
+        hypermedia. 
+        """
+        
+        super(ForumObject, self).__init__(**kwargs)
+        self["@controls"] = {}        
+    
+    def add_control_messages_all(self):
+        """
+        Adds the message-all link to an object. Intended for the document object.
+        """        
+        
+        self["@controls"]["forum:messages-all"] = {
+            "href": api.url_for(Messages),
+            "title": "All messages"
+        }
+    
+    def add_control_users_all(self):
+        """
+        This adds the users-all link to an object. Intended for the document object.  
+        """
+        
+        self["@controls"]["forum:users-all"] = {
+            "href": api.url_for(Users),
+            "title": "List users"
+        }
+    
+    def add_control_add_message(self):
+        """
+        This adds the add-message control to an object. Intended for the  
+        document object. Here you can see that adding the control is a bunch of 
+        lines where all we're basically doing is nested dictionaries to 
+        achieve the correctly formed JSON document representation. 
+        """
+        
+        self["@controls"]["forum:add-message"] = {
+            "href": api.url_for(Messages),
+            "title": "Create message",
+            "encoding": "json",
+            "method": "POST",
+            "schema": self._msg_schema()
+        }
+    
+    def add_control_add_user(self):
+        """
+        This adds the add-user control to an object. Intended ffor the 
+        document object. Instead of adding a schema dictionary we are pointing
+        to a schema url instead for two reasons: 1) to demonstrate both options;
+        2) the user schema is relatively large.
+        """        
+        
+        self["@controls"]["forum:add-user"] = {
+            "href": api.url_for(Users),
+            "title": "Create user",
+            "encoding": "json",
+            "method": "POST",
+            "schemaUrl": USER_SCHEMA_URL
+        }
+        
+        
+    def add_control_delete_message(self, msgid):
+        """
+        Adds the delete control to an object. This is intended for any 
+        object that represents a message. 
+        
+        : param str msgid: message id in the msg-N form
+        """
+        
+        self["@controls"]["forum:delete"] = {
+            "href": api.url_for(Message, messageid=msgid),  
+            "title": "Delete this message",
+            "method": "DELETE"
+        }
+        
+        
+    def add_control_edit_message(self, msgid):
+        """
+        Adds a the edit control to a message object. For the schema we need
+        the one that's intended for editing (it has editor instead of author). 
+        
+        : param str msgid: message id in the msg-N form
+        """
+        
+        self["@controls"]["edit"] = {
+            "href": api.url_for(Message, messageid=msgid),
+            "title": "Edit this message",
+            "encoding": "json",
+            "method": "PUT",
+            "schema": self._msg_schema(edit=True)
+        }
+
+    def add_control_messages_history(self, user):
+        """
+        This adds the messages history control to a user which defines a href 
+        template for making queries. In Mason query parameters are defined with 
+        a schema just like forms. 
+        
+        : param str user: nickname of the user
+        """        
+        
+        self["@controls"]["forum:messages-history"] = {
+            "href": api.url_for(History, nickname=user).rstrip("/") + u"{?length,before,after}",
+            "title": "Message history",
+            "isHrefTemplate": True,
+            "schema": self._history_schema()
+        }
+        
+    def add_control_reply_to(self, msgid):
+        """
+        Adds a reply-to control to a message. 
+        
+        : param str msgid: message id in the msg-N form
+        """        
+        
+        self["@controls"]["forum:reply"] = {
+            "href": api.url_for(Message, messageid=msgid),
+            "title": "Reply to this message",
+            "encoding": "json",
+            "method": "POST",
+            "schema": self._msg_schema()
+        }
+        
+        
+    def _msg_schema(self, edit=False):
+        """
+        Creates a schema dictionary for messages. If we're editing a message
+        the editor field should be set. If the message is new, the author field
+        should be set instead. This is controlled by the edit flag.
+        
+        This schema can also be accessed from the urls /forum/schema/edit-msg/ and 
+        /forum/schema/add-msg/.
+        
+        : param bool edit: is this schema for an edit form
+        : rtype:: dict
+        """
+        
+        if edit:
+            user_field = "editor"
+        else:
+            user_field = "author"
+        
+        schema = {
+            "type": "object",
+            "properties": {},
+            "required": ["headline", "articleBody"]
+        }
+        
+        props = schema["properties"]
+        props["headline"] = {
+            "title": "Headline",
+            "description": "Message headline",
+            "type": "string"
+        }
+        props["articleBody"] = {
+            "title": "Contents",
+            "description": "Message contents",
+            "type": "string"
+        }
+        props[user_field] = {
+            "title": user_field.capitalize(),
+            "description": "Nickname of the message {}".format(user_field),
+            "type": "string"
+        }
+        return schema
+    
+    def _history_schema(self):
+        """
+        Creates a schema dicionary for the messages history query parameters. 
+        
+        This schema can also be accessed from /forum/schema/history-query/
+        
+        :rtype:: dict
+        """
+        
+        schema = {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+        
+        props = schema["properties"]
+        props["length"] = {
+            "description": "Maximum number of messages returned",
+            "type": "integer"
+        }        
+        props["before"] = {
+            "description": "Find messages before (timestamp as seconds)",
+            "type": "integer"
+        }
+        props["after"] = {
+            "description": "Find messages after (timestamp as seconds)",
+            "type": "integer"
+        }
+        
+        return schema
+            
+        
 
 
 #ERROR HANDLERS
@@ -38,26 +329,24 @@ api = Api(app)
 # http://soabits.blogspot.no/2013/05/error-handling-considerations-and-best.html
 # I should define a profile for the error.
 def create_error_response(status_code, title, message=None):
-    ''' Creates a: py: class:`flask.Response` instance when sending back an
-      HTTP error response
-     : param integer status_code: The HTTP status code of the response
-     : param str title: A short description of the problem
-     : param message: A long description of the problem
-     : rtype:: py: class:`flask.Response`
-
-    '''
-    resource_type = None
+    """ 
+    Creates a: py: class:`flask.Response` instance when sending back an
+    HTTP error response
+      
+    : param integer status_code: The HTTP status code of the response
+    : param str title: A short description of the problem
+    : param message: A long description of the problem
+    : rtype:: py: class:`flask.Response`
+    """
+    
     resource_url = None
     ctx = _request_ctx_stack.top
     if ctx is not None:
         resource_url = request.path
-        resource_type = ctx.url_adapter.match(resource_url)[0]
-    response = jsonify(title=title,
-                       message=message,
-                       resource_url=resource_url,
-                       resource_type=resource_type)
-    response.status_code = status_code
-    return response
+    envelope = MasonObject(resource_url=resource_url)
+    envelope.add_error(title, message)
+    
+    return Response(json.dumps(envelope), status_code)
 
 @app.errorhandler(404)
 def resource_not_found(error):
@@ -77,109 +366,88 @@ def unknown_error(error):
 
 @app.before_request
 def connect_db():
-    '''Creates a database connection before the request is proccessed.
+    """
+    Creates a database connection before the request is proccessed.
 
     The connection is stored in the application context variable flask.g .
-    Hence it is accessible from the request object.'''
+    Hence it is accessible from the request object.
+    """
 
-    g.con = app.config['Engine'].connect()
+    g.con = app.config["Engine"].connect()
 
 
 #HOOKS
 @app.teardown_request
 def close_connection(exc):
-    ''' Closes the database connection
-        Check if the connection is created. It migth be exception appear before
-        the connection is created.'''
-    if hasattr(g, 'con'):
+    """ 
+    Closes the database connection
+    Check if the connection is created. It migth be exception appear before
+    the connection is created.
+    """
+    
+    if hasattr(g, "con"):
         g.con.close()
+
+
+
+
+        
+    
 
 
 #Define the resources
 class Messages(Resource):
-    '''
+    """
     Resource Messages implementation
-    '''
+    """
+    
     def get(self):
-        '''
+        """
         Get all messages.
 
         INPUT parameters:
           None
 
         RESPONSE ENTITY BODY:
-        * Media type: Collection+JSON:
-             http://amundsen.com/media-types/collection/
-           - Extensions: template validation and value-types
-             https://github.com/collection-json/extensions
+        * Media type: Mason
+          https://github.com/JornWildt/Mason
          * Profile: Forum_Message
            http://atlassian.virtues.fi: 8090/display/PWP
            /Exercise+4#Exercise4-Forum_Message
-
-        Link relations used in items: None
-        Semantic descriptions used in items: headline
-        Link relations used in links: users-all
-        Semantic descriptors used in template: headline, articleBody, author,
-        editor.
 
         NOTE:
          * The attribute articleBody is obtained from the column messages.body
          * The attribute headline is obtained from the column messages.title
          * The attribute author is obtained from the column messages.sender
-        '''
+        """
+        
         #Extract messages from database
         messages_db = g.con.get_messages()
 
-        #Create the envelope
-        envelope = {}
-        collection = {}
-        envelope["collection"] = collection
-        collection['version'] = "1.0"
-        collection['href'] = api.url_for(Messages)
-        collection['links'] = [
-                                {'prompt': 'List of all users in the Forum',
-                                'rel': 'users-all', 'href': api.url_for(Users)
-                                }
-            ]
-        collection['template'] = {
-            "data": [
-                {"prompt": "", "name": "headline",
-                 "value": "", "required": True},
-                {"prompt": "", "name": "articleBody",
-                 "value": "", "required": True},
-                {"prompt": "", "name": "author",
-                 "value": "", "required": False},
-                {"prompt": "", "name": "editor",
-                 "value": "", "required": False}
-            ]
-        }
-        #Create the items
-        items = []
-        for message in messages_db:
-            _messageid = message['messageid']
-            _headline = message['title']
-            _url = api.url_for(Message, messageid=_messageid)
-            message = {}
-            message['href'] = _url
-            message['data'] = []
-            value = {'name':'headline', 'value': _headline}
-            message['data'].append(value)
-            message['links'] = []
-            items.append(message)
-        collection['items'] = items
+        envelope = ForumObject()
+        envelope.add_namespace("forum", LINK_RELATIONS_URL)
+        
+        envelope.add_control("self", href=api.url_for(Messages))
+        envelope.add_control_users_all()
+        envelope.add_control_add_message()        
+        
+        items = envelope["items"] = []
+        
+        for msg in messages_db:             
+            item = ForumObject(id=msg["messageid"], headline=msg["title"])
+            item.add_control("self", href=api.url_for(Message, messageid=msg["messageid"]))
+            item.add_control("profile", href=FORUM_MESSAGE_PROFILE)
+            items.append(item)
 
         #RENDER
         return envelope, 200
 
     def post(self):
-        '''
+        """
         Adds a a new message.
 
         REQUEST ENTITY BODY:
-         * Media type: Collection+JSON:
-             http://amundsen.com/media-types/collection/
-           - Extensions: template validation and value-types
-             https://github.com/collection-json/extensions
+         * Media type: JSON:
          * Profile: Forum_Message
            http://atlassian.virtues.fi: 8090/display/PWP
            /Exercise+4#Exercise4-Forum_Message
@@ -189,8 +457,7 @@ class Messages(Resource):
          * The attribute headline is obtained from the column messages.title
          * The attribute author is obtained from the column messages.sender
 
-        The body should be a Collection+JSON template.
-        Semantic descriptors used in template: headline, articleBody and author.
+        The body should be a JSON document that matches the schema for new messages
         If author is not there consider it  "Anonymous".
 
         RESPONSE STATUS CODE:
@@ -201,7 +468,7 @@ class Messages(Resource):
          * Returns 415 if the format of the response is not json
          * Returns 500 if the message could not be added to database.
 
-        '''
+        """
 
         #Extract the request body. In general would be request.data
         #Since the request is JSON I use request.get_json
@@ -210,39 +477,24 @@ class Messages(Resource):
         # using JSON. We use force=True since the input media type is not
         # application/json.
 
-        if COLLECTIONJSON != request.headers.get('Content-Type',''):
+        if JSON != request.headers.get("Content-Type",""):
             return create_error_response(415, "UnsupportedMediaType",
                                          "Use a JSON compatible format")
         request_body = request.get_json(force=True)
          #It throws a BadRequest exception, and hence a 400 code if the JSON is
         #not wellformed
-        try:
-            data = request_body['template']['data']
-            title = None
-            body = None
-            sender = "Anonymous"
+        try:            
+            title = request_body["headline"]            
+            body = request_body["articleBody"]
+            sender = request_body.get("author", "Anonymous")
             ipaddress = request.remote_addr
 
-            for d in data:
-                #This code has a bad performance. We write it like this for
-                #simplicity. Another alternative should be used instead.
-                if d['name'] == 'headline':
-                    title = d['value']
-                elif d['name'] == 'articleBody':
-                    body = d['value']
-                elif d['name'] == 'author':
-                    sender = d['value']
-
-            #CHECK THAT DATA RECEIVED IS CORRECT
-            if not title or not body:
-                return create_error_response(400, "Wrong request format",
-                                             "Be sure you include message title and body")
-        except:
+        except KeyError:
             #This is launched if either title or body does not exist or if
             # the template.data array does not exist.
             return create_error_response(400, "Wrong request format",
                                          "Be sure you include message title and body")
-        #Create the new message and build the response code'
+        #Create the new message and build the response code"
         newmessageid = g.con.create_message(title, body, sender, ipaddress)
         if not newmessageid:
             return create_error_response(500, "Problem with the database",
@@ -253,15 +505,15 @@ class Messages(Resource):
 
         #RENDER
         #Return the response
-        return Response(status=201, headers={'Location': url})
+        return Response(status=201, headers={"Location": url})
 
 class Message(Resource):
-    '''
+    """
     Resource that represents a single message in the API.
-    '''
+    """
 
     def get(self, messageid):
-        '''
+        """
         Get the body, the title and the id of a specific message.
 
         Returns status code 404 if the messageid does not exist in the database.
@@ -291,7 +543,7 @@ class Message(Resource):
          * The attribute articleBody is obtained from the column messages.body
          * The attribute headline is obtained from the column messages.title
          * The attribute author is obtained from the column messages.sender
-        '''
+        """
 
         #PEFORM OPERATIONS INITIAL CHECKS
         #Get the message from db
@@ -302,87 +554,39 @@ class Message(Resource):
                        resource_url=request.path,
                        resource_id=messageid)
 
+        sender = message_db.get("sender", "Anonymous")
+        parent = message_db.get("replyto", None)
+        
         #FILTER AND GENERATE RESPONSE
         #Create the envelope:
-        envelope = {}
-        #Now create the links
-        links = {}
-        envelope["_links"] = links
-
-        #Fill the links
-        _curies = [
-            {
-                "name": "msg",
-                "href": FORUM_MESSAGE_PROFILE + "/{rels}",
-                "templated": True
-            },
-            {
-                "name": "atom-thread",
-                "href": ATOM_THREAD_PROFILE + "/{rels}",
-                "templated": True
-            }
-        ]
-        links['curies'] = _curies
-        links['self'] = {'href': api.url_for(Message, messageid=messageid),
-                         'profile': FORUM_MESSAGE_PROFILE}
-        links['collection'] = {'href': api.url_for(Messages),
-                               'profile': FORUM_MESSAGE_PROFILE,
-                               'type': COLLECTIONJSON}
-        links['msg:reply'] = {'href': api.url_for(Message, messageid=messageid),
-                              'profile': FORUM_MESSAGE_PROFILE}
-        #Extract the author and add the link
-        #If sender is not Anonymous extract the nickname from message_db,
-        #the link exista but its href points to None.
-        sender_db = message_db.get('sender', 'Anonymous')
-        if sender_db != 'Anonymous':
-            links['msg:author'] = {
-                'href': api.url_for(User, nickname=sender_db),
-                'profile': FORUM_USER_PROFILE,
-                'type': HAL}
-        else:
-            links['msg: author'] = {'href': None,
-                                   'profile': FORUM_USER_PROFILE,
-                                   'type': HAL}
-        #Extract the parent and add the corresponding link
-        parent = message_db.get('replyto', None)
+        envelope = ForumObject(
+            headline=message_db["title"],
+            articleBody=message_db["body"],
+            author=sender,
+            editor=message_db["editor"]            
+        )
+        
+        envelope.add_namespace("forum", LINK_RELATIONS_URL)
+        envelope.add_namespace("atom-thread", ATOM_THREAD_PROFILE)
+        
+        envelope.add_control_delete_message(messageid)
+        envelope.add_control_edit_message(messageid)
+        envelope.add_control_reply_to(messageid)
+        envelope.add_control("profile", href=FORUM_MESSAGE_PROFILE)        
+        envelope.add_control("collection", href=api.url_for(Messages))
+        envelope.add_control("self", href=api.url_for(Message, messageid=messageid))                
+        envelope.add_control("author", href=api.url_for(User, nickname=sender))
+        
         if parent:
-            links['atom-thread:in-reply-to'] = {
-                'href': api.url_for(Message, messageid=parent),
-                'profile': FORUM_MESSAGE_PROFILE,
-                'type': HAL}
+            envelope.add_control("atom-thread:in-reply-to", href=api.url_for(Message, messageid=parent))
         else:
-            links['atom-thread:in-reply-to'] = {
-                'href': None,
-                'profile': FORUM_MESSAGE_PROFILE,
-                'type': HAL}
-
-
-
-        #Fill the template
-        envelope['template'] = {
-            "data": [
-                {"prompt": "", "name": "headline",
-                 "value": "", "required": True},
-                {"prompt": "", "name": "articleBody",
-                 "value": "", "required": True},
-                {"prompt": "", "name": "author",
-                 "value": "", "required": False},
-                {"prompt": "", "name": "editor",
-                 "value": "", "required": False}
-            ]
-        }
-
-        #Fill the rest of properties
-        envelope['articleBody'] = message_db['body']
-        envelope['headline'] = message_db['title']
-        envelope['author'] = sender_db  # Calculated before. It can be Anonymous
-        envelope['editor'] = message_db['editor']
-
+            envelope.add_control("atom-thread:in-reply-to", href=None)
+        
         #RENDER
         return envelope, 200
 
     def delete(self, messageid):
-        '''
+        """
         Deletes a message from the Forum API.
 
         INPUT PARAMETERS:
@@ -391,11 +595,11 @@ class Message(Resource):
         RESPONSE STATUS CODE
          * Returns 204 if the message was deleted
          * Returns 404 if the messageid is not associated to any message.
-        '''
+        """
 
         #PERFORM DELETE OPERATIONS
         if g.con.delete_message(messageid):
-            return '', 204
+            return "", 204
         else:
             #Send error message
             return create_error_response(404, "Unknown message",
@@ -403,7 +607,7 @@ class Message(Resource):
                                         )
 
     def put(self, messageid):
-        '''
+        """
         Modifies the title, body and editor properties of this message.
 
         INPUT PARAMETERS:
@@ -417,8 +621,7 @@ class Message(Resource):
         * Profile: Forum_Message
           /profiles/message-profile
 
-        The body should be a Collection+JSON template.
-        Semantic descriptors used in template: headline, articleBody and editor.
+        The body should be a JSON document that matches the schema for editing messages
         If author is not there consider it  "Anonymous".
 
         OUTPUT:
@@ -434,7 +637,7 @@ class Message(Resource):
          * The attribute headline is obtained from the column messages.title
          * The attribute author is obtained from the column messages.sender
 
-        '''
+        """
 
         #CHECK THAT MESSAGE EXISTS
         if not g.con.contains_message(messageid):
@@ -442,59 +645,33 @@ class Message(Resource):
                                          "There is no a message with id %s" % messageid
                                         )
 
-        if COLLECTIONJSON != request.headers.get('Content-Type',''):
+        if JSON != request.headers.get("Content-Type",""):
             return create_error_response(415, "UnsupportedMediaType",
                                          "Use a JSON compatible format")
-
-        #PARSE THE REQUEST
-        #Extract the request body. In general would be request.data
-        #Since the request is JSON I use request.get_json
-        #get_json returns a python dictionary after serializing the request body
-        #get_json returns None if the body of the request is not formatted
-        # using JSON
         request_body = request.get_json(force=True)
-        if not request_body:
-            return create_error_response(415, "Unsupported Media Type",
-                                         "Use a JSON compatible format"
-                                        )
-
-       #It throws a BadRequest exception, and hence a 400 code if the JSON is
+         #It throws a BadRequest exception, and hence a 400 code if the JSON is
         #not wellformed
-        try:
-            data = request_body['template']['data']
-            title = None
-            body = None
-            editor = "Anonymous"
-            for d in data:
-                #This code has a bad performance. We write it like this for
-                #simplicity. Another alternative should be used instead.
-                if d['name'] == 'headline':
-                    title = d['value']
-                elif d['name'] == 'articleBody':
-                    body = d['value']
-                elif d['name'] == 'editor':
-                    editor = d['value']
-            #CHECK THAT DATA RECEIVED IS CORRECT
-            if not title or not body:
-                return create_error_response(400, "Wrong request format",
-                                             "Be sure you include message title and body"
-                                             )
-        except:
-            #This is launched if either title or body does not exist or the
-            #template.data is not there.
+        try:            
+            title = request_body["headline"]            
+            body = request_body["articleBody"]
+            editor = request_body.get("editor", "Anonymous")
+            ipaddress = request.remote_addr
+
+        except KeyError:
+            #This is launched if either title or body does not exist or if
+            # the template.data array does not exist.
             return create_error_response(400, "Wrong request format",
-                                         "Be sure you include message title and body",
-                                          )
+                                         "Be sure you include message title and body")                                          
         else:
             #Modify the message in the database
             if not g.con.modify_message(messageid, title, body, editor):
                 return create_error_response(500, "Internal error",
                                          "Message information for %s cannot be updated" % messageid
                                         )
-            return '', 204
+            return "", 204
 
     def post(self, messageid):
-        '''
+        """
         Adds a response to a message with id <messageid>.
 
         INPUT PARAMETERS:
@@ -508,9 +685,8 @@ class Message(Resource):
          * Profile: Forum_Message
           /profiles/message-profile
 
-         The body should be a Collection+JSON template.
-         Semantic descriptors used in template: headline, articleBody and author.
-         If author is not there consider it  "Anonymous".
+        The body should be a JSON document that matches the schema for new messages
+        If author is not there consider it  "Anonymous".
 
         RESPONSE HEADERS:
          * Location: Contains the URL of the new message
@@ -528,7 +704,7 @@ class Message(Resource):
          * The attribute articleBody is obtained from the column messages.body
          * The attribute headline is obtained from the column messages.title
          * The attribute author is obtained from the column messages.sender
-        '''
+        """
 
         #CHECK THAT MESSAGE EXISTS
         #If the message with messageid does not exist return status code 404
@@ -537,51 +713,25 @@ class Message(Resource):
                                          "There is no a message with id %s" % messageid
                                         )
 
-        if COLLECTIONJSON != request.headers.get('Content-Type',''):
+        if JSON != request.headers.get("Content-Type",""):
             return create_error_response(415, "UnsupportedMediaType",
                                          "Use a JSON compatible format")
-        #Extract the request body. In general would be request.data
-        #Since the request is JSON I use request.get_json
-        #get_json returns a python dictionary after serializing the request body
-        #get_json returns None if the body of the request is not formatted
-        # using JSON
         request_body = request.get_json(force=True)
-        if not request_body:
-            return create_error_response(415, "Unsupported Media Type",
-                                         "Use a JSON compatible format"
-                                        )
-
-        #It throws a BadRequest exception, and hence a 400 code if the JSON is
+         #It throws a BadRequest exception, and hence a 400 code if the JSON is
         #not wellformed
-        try:
-            data = request_body['template']['data']
-            title = None
-            body = None
-            sender = "Anonymous"
+        try:            
+            title = request_body["headline"]            
+            body = request_body["articleBody"]
+            sender = request_body.get("author", "Anonymous")
             ipaddress = request.remote_addr
 
-            for d in data:
-                #This code has a bad performance. We write it like this for
-                #simplicity. Another alternative should be used instead.
-                if d['name'] == 'headline':
-                    title = d['value']
-                elif d['name'] == 'articleBody':
-                    body = d['value']
-                elif d['name'] == 'author':
-                    sender = d['value']
-
-            #CHECK THAT DATA RECEIVED IS CORRECT
-            if not title or not body:
-                abort(400)
-                                             )
-        except:
+        except KeyError:
             #This is launched if either title or body does not exist or if
             # the template.data array does not exist.
             return create_error_response(400, "Wrong request format",
-                                         "Be sure you include message title and body"
-                                          )
+                                         "Be sure you include message title and body")
 
-        #Create the new message and build the response code'
+        #Create the new message and build the response code"
         newmessageid = g.con.append_answer(messageid, title, body,
                                            sender, ipaddress)
         if not newmessageid:
@@ -592,12 +742,12 @@ class Message(Resource):
 
         #RENDER
         #Return the response
-        return Response(status=201, headers={'Location': url})
+        return Response(status=201, headers={"Location": url})
 
 class Users(Resource):
 
     def get(self):
-        '''
+        """
         Gets a list of all the users in the database.
 
         It returns always status code 200.
@@ -633,80 +783,38 @@ class Users(Resource):
          * The attribute image is obtained from the column users_profile.picture
          * The rest of attributes match one-to-one with column names in the
            database.
-        '''
+        """
         #PERFORM OPERATIONS
         #Create the messages list
         users_db = g.con.get_users()
 
         #FILTER AND GENERATE THE RESPONSE
        #Create the envelope
-        envelope = {}
-        collection = {}
-        envelope["collection"] = collection
-        collection['version'] = "1.0"
-        collection['href'] = api.url_for(Users)
-        collection['links'] = [{'prompt': 'List of all messages in the Forum',
-                                'rel': 'messages-all',
-                                'href': api.url_for(Messages)}
-                              ]
-
-        collection['template'] = {
-            "data": [
-                {"prompt": "Insert nickname", "name": "nickname",
-                 "value": "", "required": True},
-                {"prompt": "Insert user address", "name": "address",
-                 "object": {}, "required": False},
-                {"prompt": "Insert user avatar", "name": "avatar",
-                 "value": "", "required": True},
-                {"prompt": "Insert user birthday", "name": "birthday",
-                 "value": "", "required": True},
-                {"prompt": "Insert user email", "name": "email",
-                 "value": "", "required": True},
-                {"prompt": "Insert user familyName", "name": "familyName",
-                 "value": "", "required": True},
-                {"prompt": "Insert user gender", "name": "gender",
-                 "value": "", "required": True},
-                {"prompt": "Insert user givenName", "name": "givenName",
-                 "value": "", "required": True},
-                {"prompt": "Insert user image", "name": "image",
-                 "value": "", "required": False},
-                {"prompt": "Insert user signature", "name": "signature",
-                 "value": "", "required": True},
-                {"prompt": "Insert user skype", "name": "skype",
-                 "value": "", "required": False},
-                {"prompt": "Insert user telephone", "name": "telephone",
-                 "value": "", "required": False},
-                {"prompt": "Insert user website", "name": "website",
-                 "value": "", "required": False}
-            ]
-        }
-        #Create the items
-        items = []
+        envelope = ForumObject()
+        
+        envelope.add_namespace("forum", LINK_RELATIONS_URL)
+        
+        envelope.add_control_add_user()
+        envelope.add_control_messages_all()
+        envelope.add_control("self", href=api.url_for(Users))
+        
+        items = envelope["items"] = []
+        
         for user in users_db:
-            _nickname = user['nickname']
-            _registrationdate = user['registrationdate']
-            _url = api.url_for(User, nickname=_nickname)
-            _history_url = api.url_for(History, nickname=_nickname)
-            user = {}
-            user['href'] = _url
-            user['read-only'] = True
-            user['data'] = []
-            value = {'name': 'nickname', 'value': _nickname}
-            user['data'].append(value)
-            value = {'name': 'registrationdate', 'value': _registrationdate}
-            user['data'].append(value)
-            user['links'] = [{'href': _history_url,
-                              'rel': "messages",
-                              'name': "history",
-                              'prompt': "History of user"
-                            }]
-            items.append(user)
-        collection['items'] = items
+            item = ForumObject(
+                nickname=user["nickname"],
+                registrationdate=user["registrationdate"]
+            )
+            item.add_control_messages_history(user["nickname"])
+            item.add_control("self", href=api.url_for(User, nickname=user["nickname"]))
+            item.add_control("profile", href=FORUM_USER_PROFILE)
+            items.append(item)
+        
         #RENDER
         return envelope, 200
 
     def post(self):
-        '''
+        """
         Adds a new user in the database.
 
 
@@ -747,17 +855,17 @@ class Users(Resource):
         NOTE:
         The: py: method:`Connection.append_user()` receives as a parameter a
         dictionary with the following format.
-        {'public_profile':{'nickname':''
-                           'signature':'','avatar':''},
-         'restricted_profile':{'firstname':'','lastname':'','email':'',
-                                  'website':'','mobile':'','skype':'',
-                                  'birthday':'','residence':'','gender':'',
-                                  'picture':''}
+        {"public_profile":{"nickname":""
+                           "signature":"","avatar":""},
+         "restricted_profile":{"firstname":"","lastname":"","email":"",
+                                  "website":"","mobile":"","skype":"",
+                                  "birthday":"","residence":"","gender":"",
+                                  "picture":""}
             }
 
-        '''
+        """
 
-        if COLLECTIONJSON != request.headers.get('Content-Type', ''):
+        if JSON != request.headers.get("Content-Type", ""):
             abort(415)
         #PARSE THE REQUEST:
         request_body = request.get_json(force=True)
@@ -769,85 +877,64 @@ class Users(Resource):
         #We should check that the format of the request body is correct. Check
         #That mandatory attributes are there.
 
-        data = request_body['template']['data']
-        _nickname = None
-        _residence = None
-        _avatar = None
-        _birthday = None
-        _email = None
-        _lastname = None
-        _gender = None
-        _firstname = None
-        _picture = None
-        _signature = None
-        _skype = None
-        _mobile = None
-        _website = None
+        # pick up nickname so we can check for conflicts
+        try:
+            nickname = request_body["nickname"]
+        except KeyError:
+            return create_error_response(400, "Wrong request format", "User nickname was missing from the request")
 
-        for d in data:
-        #This code has a bad performance. We write it like this for
-        #simplicity. Another alternative should be used instead. E.g.
-        #generation expressions
-            if d['name'] == "address":
-                try:
-                    _residence = d['object']['addressLocality'] + \
-                        ","+d['object']['addressCountry']
-                except KeyError:
-                    return create_error_response(400, "Wrong request format",
-                                                 "Incorrect format of address field"
-                                                )
-            elif d['name'] == "avatar":
-                _avatar = d['value']
-            elif d['name'] == "birthday":
-                _birthday = d['value']
-            elif d['name'] == "email":
-                _email = d['value']
-            elif d['name'] == "familyName":
-                _lastname = d['value']
-            elif d['name'] == "gender":
-                _gender = d['value']
-            elif d['name'] == "givenName":
-                _firstname = d['value']
-            elif d['name'] == "image":
-                _picture = d['value']
-            elif d['name'] == "signature":
-                _signature = d['value']
-            elif d['name'] == "skype":
-                _skype = d['value']
-            elif d['name'] == "telephone":
-                _mobile = d['value']
-            elif d['name'] == "website":
-                _website = d['value']
-            elif d['name'] == "nickname":
-                _nickname = d['value']
-        if not _avatar or not _birthday or not _email or not _lastname or \
-           not _gender or not _firstname or not _signature or not _nickname:
-            return create_error_response(400, "Wrong request format",
-                                         "Be sure you include all"
-                                         " mandatory properties"
-                                        )
         #Conflict if user already exist
-        if g.con.contains_user(_nickname):
+        if g.con.contains_user(nickname):
             return create_error_response(409, "Wrong nickname",
                                          "There is already a user with same"
-                                         "nickname:%s." % _nickname)
+                                         "nickname:%s." % nickname)
 
-        user = {'public_profile': {'nickname': _nickname,
-                                   'signature': _signature, 'avatar': _avatar},
-                'restricted_profile': {'firstname': _firstname,
-                                       'lastname': _lastname,
-                                       'email': _email,
-                                       'website': _website,
-                                       'mobile': _mobile,
-                                       'skype': _skype,
-                                       'birthday': _birthday,
-                                       'residence': _residence,
-                                       'gender': _gender,
-                                       'picture': _picture}
+        # pick up rest of the mandatory fields
+        try:
+            avatar = request_body["avatar"]
+            birthdate = request_body["birthDate"]
+            email = request_body["email"]
+            familyname = request_body["familyName"]
+            gender = request_body["gender"]
+            givenname = request_body["givenName"]
+            signature = request_body["signature"]
+        except KeyError:
+            return create_error_response(400, "Wrong request format", "Be sure to include all mandatory properties")
+        
+        # check address if given
+        
+        address = request_body.get("address", None)
+        if address:
+            try:                
+                residence = "{addressLocality}, {addressCountry}".format(**address)
+            except (KeyError, TypeError):
+                return create_error_response(400, "Wrong request format", "Incorrect format of address field")
+        else:
+            residence = None
+        
+        # pick up rest of the optional fields
+        
+        image = request_body.get("image", "")
+        mobile = request_body.get("telephone", "")
+        skype = request_body.get("skype", "")
+        website = request_body.get("website", "")
+
+        user = {"public_profile": {"nickname": nickname,
+                                   "signature": signature, "avatar": avatar},
+                "restricted_profile": {"firstname": givenname,
+                                       "lastname": familyname,
+                                       "email": email,
+                                       "website": website,
+                                       "mobile": mobile,
+                                       "skype": skype,
+                                       "birthday": birthdate,
+                                       "residence": residence,
+                                       "gender": gender,
+                                       "picture": image}
         }
 
         try:
-            nickname = g.con.append_user(_nickname, user)
+            nickname = g.con.append_user(nickname, user)
         except ValueError:
             return create_error_response(400, "Wrong request format",
                                          "Be sure you include all"
@@ -855,23 +942,17 @@ class Users(Resource):
                                         )
 
         #CREATE RESPONSE AND RENDER
-        if nickname:
-            return Response(
-                status=201,
-                headers={"Location": api.url_for(User,
-                                                 nickname=nickname)})
-        #User in the database
-        else:
-            return create_error_response(409, "User in database",
-                                         "Nickname: %s already in use" % nickname)
+        return Response(status=201,
+            headers={"Location": api.url_for(User, nickname=nickname)})
+
 
 class User(Resource):
-    '''
+    """
     User Resource. Public and private profile are separate resources.
-    '''
+    """
 
     def get(self, nickname):
-        '''
+        """
         Get basic information of a user:
 
         INPUT PARAMETER:
@@ -897,20 +978,20 @@ class User(Resource):
         The: py: method:`Connection.get_user()` returns a dictionary with the
         the following format.
 
-        {'public_profile':{'registrationdate':,'nickname':''
-                               'signature':'','avatar':''},
-        'restricted_profile':{'firstname':'','lastname':'','email':'',
-                              'website':'','mobile':'','skype':'',
-                              'birthday':'','residence':'','gender':'',
-                              'picture':''}
+        {"public_profile":{"registrationdate":,"nickname":""
+                               "signature":"","avatar":""},
+        "restricted_profile":{"firstname":"","lastname":"","email":"",
+                              "website":"","mobile":"","skype":"",
+                              "birthday":"","residence":"","gender":"",
+                              "picture":""}
             }
-        '''
+        """
 
-        '''#TODO 4 Implement the method'''
+        """#TODO 4 Implement the method"""
         return None
 
     def delete(self, nickname):
-        '''
+        """
         Delete a user in the system.
 
        : param str nickname: Nickname of the required user.
@@ -918,43 +999,43 @@ class User(Resource):
         RESPONSE STATUS CODE:
          * If the user is deleted returns 204.
          * If the nickname does not exist return 404
-        '''
+        """
 
-        '''#TODO 4 Implement the method'''
+        """#TODO 4 Implement the method"""
         return None
 
 
 class User_public(Resource):
 
     def get (self, nickname):
-        '''
+        """
         Not implemented
-        '''
+        """
         abort(501)
 
     def put (self, nickname):
-        '''
+        """
         Not implemented
-        '''
+        """
         abort(501)
 
 class User_restricted(Resource):
 
     def get (self, nickname):
-        '''
+        """
         Not implemented
-        '''
+        """
         abort(501)
 
     def put (self, nickname):
-        '''
+        """
         Not implemented
-        '''
+        """
         abort(501)
 
 class History(Resource):
     def get (self, nickname):
-        '''
+        """
             This method returns a list of messages that has been sent by an user
             and meet certain restrictions (result of an algorithm).
             The restrictions are given in the URL as query parameters.
@@ -987,41 +1068,51 @@ class History(Resource):
             Link relations used in links: messages-all, author
 
             Semantic descriptors used in queries: after, before, lenght
-        '''
-        '''#TODO 4 Implement the method'''
+        """
+        """#TODO 4 Implement the method"""
         return None
         
 
 #Add the Regex Converter so we can use regex expressions when we define the
 #routes
-app.url_map.converters['regex'] = RegexConverter
+app.url_map.converters["regex"] = RegexConverter
 
 
 #Define the routes
-api.add_resource(Messages, '/forum/api/messages/',
-                 endpoint='messages')
-api.add_resource(Message, '/forum/api/messages/<regex("msg-\d+"):messageid>/',
-                 endpoint='message')
-api.add_resource(User_public, '/forum/api/users/<nickname>/public_profile/',
-                 endpoint='public_profile')
-api.add_resource(User_restricted, '/forum/api/users/<nickname>/restricted_profile/',
-                 endpoint='restricted_profile')
-api.add_resource(Users, '/forum/api/users/',
-                 endpoint='users')
-api.add_resource(User, '/forum/api/users/<nickname>/',
-                 endpoint='user')
-api.add_resource(History, '/forum/api/users/<nickname>/history/',
-                 endpoint='history')
+api.add_resource(Messages, "/forum/api/messages/",
+                 endpoint="messages")
+api.add_resource(Message, "/forum/api/messages/<regex('msg-\d+'):messageid>/",
+                 endpoint="message")
+api.add_resource(User_public, "/forum/api/users/<nickname>/public_profile/",
+                 endpoint="public_profile")
+api.add_resource(User_restricted, "/forum/api/users/<nickname>/restricted_profile/",
+                 endpoint="restricted_profile")
+api.add_resource(Users, "/forum/api/users/",
+                 endpoint="users")
+api.add_resource(User, "/forum/api/users/<nickname>/",
+                 endpoint="user")
+api.add_resource(History, "/forum/api/users/<nickname>/history/",
+                 endpoint="history")
+
 
 
 #Redirect profile
-@app.route('/profiles/<profile_name>')
+@app.route("/profiles/<profile_name>")
 def redirect_to_profile(profile_name):
     return redirect(APIARY_PROFILES_URL + profile_name)
+
+@app.route("/forum/link-relations/<rel_name>/")
+def redirect_to_rels(rel_name):
+    return redirect(APIARY_RELS_URL + rel_name)
+
+#Send our schema file(s)
+@app.route("/forum/schema/<schema_name>/")
+def send_json_schema(schema_name):
+    return send_from_directory("static/schema", "{}.json".format(schema_name))
 
 
 #Start the application
 #DATABASE SHOULD HAVE BEEN POPULATED PREVIOUSLY
-if __name__ == '__main__':
+if __name__ == "__main__":
     #Debug true activates automatic code reloading and improved error messages
     app.run(debug=True)

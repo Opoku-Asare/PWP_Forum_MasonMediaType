@@ -1,10 +1,10 @@
 """
 Created on 26.01.2013
-Modified on 23.02.2016
-@author: ivan
+Modified on 05.02.2017
+@author: ivan sanchez
+@author: mika oja
 """
 
-#TODO: Create another file
 import json
 
 from flask import Flask, request, Response, g, jsonify, _request_ctx_stack, redirect, send_from_directory
@@ -15,18 +15,17 @@ from utils import RegexConverter
 import database
 
 #Constants for hypermedia formats and profiles
-COLLECTIONJSON = "application/vnd.collection+json"
-HAL = "application/hal+json"
 MASON = "application/vnd.mason+json"
 JSON = "application/json"
 FORUM_USER_PROFILE ="/profiles/user-profile/"
 FORUM_MESSAGE_PROFILE = "/profiles/message-profile/"
+ERROR_PROFILE = "/profiles/error-profile"
+
 ATOM_THREAD_PROFILE = "https://tools.ietf.org/html/rfc4685"
 
 # Fill these in
 APIARY_PROFILES_URL = "STUDENT_APIARY_PROJECT/#reference/profiles/"
 APIARY_RELS_URL = "STUDENT_APIARY_PROJECT/#reference/link-relations/"
-
 
 USER_SCHEMA_URL = "/forum/schema/user/"
 LINK_RELATIONS_URL = "/forum/link-relations/"
@@ -41,17 +40,16 @@ app.config.update({"Engine": database.Engine()})
 #Start the RESTful API.
 api = Api(app)
 
-
 # These two classes below are how we make producing the resource representation
 # JSON documents manageable and resilient to errors. As noted, our mediatype is
-# Mason. Similar solutions can easily be implemented for other mediatypes. 
+# Mason. Similar solutions can easily be implemented for other mediatypes.
 
-class MasonObject(dict):    
+class MasonObject(dict):
     """
-    A convenience class for managing dictionaries that represent Mason 
+    A convenience class for managing dictionaries that represent Mason
     objects. It provides nice shorthands for inserting some of the more
     elements into the object but mostly is just a parent for the much more
-    useful subclass defined next. This class is generic in the sense that it 
+    useful subclass defined next. This class is generic in the sense that it
     does not contain any application specific implementation details.
     """
 
@@ -107,7 +105,6 @@ class MasonObject(dict):
             self["@controls"] = {}
         
         self["@controls"][ctrl_name] = kwargs
-        
 
 class ForumObject(MasonObject):    
     """
@@ -320,9 +317,6 @@ class ForumObject(MasonObject):
         }
         
         return schema
-            
-        
-
 
 #ERROR HANDLERS
 #TODO: Modify this accordding
@@ -340,13 +334,14 @@ def create_error_response(status_code, title, message=None):
     """
     
     resource_url = None
+    #We need to access the context in order to access the request.path
     ctx = _request_ctx_stack.top
     if ctx is not None:
         resource_url = request.path
     envelope = MasonObject(resource_url=resource_url)
     envelope.add_error(title, message)
     
-    return Response(json.dumps(envelope), status_code)
+    return Response(json.dumps(envelope), status_code, mimetype=MASON+";"+ERROR_PROFILE)
 
 @app.errorhandler(404)
 def resource_not_found(error):
@@ -363,7 +358,6 @@ def unknown_error(error):
     return create_error_response(500, "Error",
                     "The system has failed. Please, contact the administrator")
 
-
 @app.before_request
 def connect_db():
     """
@@ -374,7 +368,6 @@ def connect_db():
     """
 
     g.con = app.config["Engine"].connect()
-
 
 #HOOKS
 @app.teardown_request
@@ -387,13 +380,6 @@ def close_connection(exc):
     
     if hasattr(g, "con"):
         g.con.close()
-
-
-
-
-        
-    
-
 
 #Define the resources
 class Messages(Resource):
@@ -754,7 +740,6 @@ class Users(Resource):
 
         RESPONSE ENTITITY BODY:
 
-
          OUTPUT:
             * Media type: Collection+JSON:
              http://amundsen.com/media-types/collection/
@@ -816,7 +801,6 @@ class Users(Resource):
     def post(self):
         """
         Adds a new user in the database.
-
 
         REQUEST ENTITY BODY:
          * Media type: Collection+JSON:
@@ -945,7 +929,6 @@ class Users(Resource):
         return Response(status=201,
             headers={"Location": api.url_for(User, nickname=nickname)})
 
-
 class User(Resource):
     """
     User Resource. Public and private profile are separate resources.
@@ -964,10 +947,8 @@ class User(Resource):
 
         RESPONSE ENTITY BODY:
 
-        * Media type recommended: application/hal+json:
-             http://stateless.co/hal_specification.html
-         * Profile recommended: Forum_User
-           /profiles/user-profile
+        * Media type recommended: application/vnd.mason+json
+        * Profile recommended: application/vnd.mason+json
 
         Link relations used: self, collection, public-data, private-data,
         messages.
@@ -1003,7 +984,6 @@ class User(Resource):
 
         """#TODO 4 Implement the method"""
         return None
-
 
 class User_public(Resource):
 
@@ -1054,12 +1034,9 @@ class History(Resource):
              * Returns 404 if no message meets the requirement
 
             RESPONSE ENTITY BODY:
-            * Media type recommended: Collection+JSON:
-             http://amundsen.com/media-types/collection/
-             - Extensions: template validation and value-types
-               https://github.com/collection-json/extensions
+            * Media type recommended: application/vnd.mason+json
             * Profile recommended: Forum_Message
-                /profiles/user-profile
+                /profiles/message-profile
 
             Link relations used in items: None
 
@@ -1071,12 +1048,10 @@ class History(Resource):
         """
         """#TODO 4 Implement the method"""
         return None
-        
 
 #Add the Regex Converter so we can use regex expressions when we define the
 #routes
 app.url_map.converters["regex"] = RegexConverter
-
 
 #Define the routes
 api.add_resource(Messages, "/forum/api/messages/",
@@ -1094,8 +1069,6 @@ api.add_resource(User, "/forum/api/users/<nickname>/",
 api.add_resource(History, "/forum/api/users/<nickname>/history/",
                  endpoint="history")
 
-
-
 #Redirect profile
 @app.route("/profiles/<profile_name>")
 def redirect_to_profile(profile_name):
@@ -1109,7 +1082,6 @@ def redirect_to_rels(rel_name):
 @app.route("/forum/schema/<schema_name>/")
 def send_json_schema(schema_name):
     return send_from_directory("static/schema", "{}.json".format(schema_name))
-
 
 #Start the application
 #DATABASE SHOULD HAVE BEEN POPULATED PREVIOUSLY

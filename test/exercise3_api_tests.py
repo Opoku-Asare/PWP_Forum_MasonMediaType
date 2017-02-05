@@ -1,7 +1,8 @@
 """
 Created on 26.01.2013
-Modified on 24.02.2016
-@author: ivan
+Modified on 05.02.2017
+@author: ivan sanchez
+@author: mika oja
 """
 import unittest, copy
 import json
@@ -14,7 +15,6 @@ import forum.database as database
 DB_PATH = "db/forum_test.db"
 ENGINE = database.Engine(DB_PATH)
 
-COLLECTIONJSON = "application/vnd.collection+json"
 MASONJSON = "application/vnd.mason+json"
 JSON = "application/json"
 HAL = "application/hal+json"

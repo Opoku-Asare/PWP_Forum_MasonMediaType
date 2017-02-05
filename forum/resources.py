@@ -7,9 +7,8 @@ Modified on 05.02.2017
 
 import json
 
-from flask import Flask, request, Response, g, jsonify, _request_ctx_stack, redirect, send_from_directory
+from flask import Flask, request, Response, g, _request_ctx_stack, redirect, send_from_directory
 from flask.ext.restful import Resource, Api, abort
-from werkzeug.exceptions import NotFound,  UnsupportedMediaType
 
 from utils import RegexConverter
 import database
@@ -17,15 +16,15 @@ import database
 #Constants for hypermedia formats and profiles
 MASON = "application/vnd.mason+json"
 JSON = "application/json"
-FORUM_USER_PROFILE ="/profiles/user-profile/"
+FORUM_USER_PROFILE = "/profiles/user-profile/"
 FORUM_MESSAGE_PROFILE = "/profiles/message-profile/"
 ERROR_PROFILE = "/profiles/error-profile"
 
 ATOM_THREAD_PROFILE = "https://tools.ietf.org/html/rfc4685"
 
 # Fill these in
-APIARY_PROFILES_URL = "STUDENT_APIARY_PROJECT/#reference/profiles/"
-APIARY_RELS_URL = "STUDENT_APIARY_PROJECT/#reference/link-relations/"
+APIARY_PROFILES_URL = "STUDENT_APIARY_PROJECT/reference/profiles/"
+APIARY_RELS_URL = "STUDENT_APIARY_PROJECT/reference/link-relations/"
 
 USER_SCHEMA_URL = "/forum/schema/user/"
 LINK_RELATIONS_URL = "/forum/link-relations/"
@@ -56,54 +55,54 @@ class MasonObject(dict):
     def add_error(self, title, details):
         """
         Adds an error element to the object. Should only be used for the root
-        object, and only in error scenarios. 
-        
+        object, and only in error scenarios.
+
         Note: Mason allows more than one string in the @messages property (it's
-        in fact an array). However we are being lazy and supporting just one 
-        message. 
-        
+        in fact an array). However we are being lazy and supporting just one
+        message.
+
         : param str title: Short title for the error
-        : param str details: Longer human-readable description        
-        """        
-        
+        : param str details: Longer human-readable description
+        """
+
         self["@error"] = {
             "@message": title,
             "@messages": [details],
         }
-    
+
     def add_namespace(self, ns, uri):
         """
         Adds a namespace element to the object. A namespace defines where our
-        link relations are coming from. The URI can be an address where 
-        developers can find information about our link relations. 
-        
+        link relations are coming from. The URI can be an address where
+        developers can find information about our link relations.
+
         : param str ns: the namespace prefix
         : param str uri: the identifier URI of the namespace
         """
-        
+
         if "@namespaces" not in self:
             self["@namespaces"] = {}
-        
+
         self["@namespaces"][ns] = {
             "name": uri
         }
-        
+
     def add_control(self, ctrl_name, **kwargs):
         """
         Adds a control property to an object. Also adds the @controls property
-        if it doesn't exist on the object yet. Technically only certain 
-        properties are allowed for kwargs but again we're being lazy and don't 
+        if it doesn't exist on the object yet. Technically only certain
+        properties are allowed for kwargs but again we're being lazy and don't
         perform any checking.
-        
-        The allowed properties can be found from here 
+
+        The allowed properties can be found from here
         https://github.com/JornWildt/Mason/blob/master/Documentation/Mason-draft-2.md
-        
+
         : param str ctrl_name: name of the control (including namespace if any)        
         """
-                
+
         if "@controls" not in self:
             self["@controls"] = {}
-        
+
         self["@controls"][ctrl_name] = kwargs
 
 class ForumObject(MasonObject):    
@@ -114,41 +113,41 @@ class ForumObject(MasonObject):
     context independent, and defining them in the resource methods would add a 
     lot of noise to our code - not to mention making inconsistencies much more
     likely!
-    
+
     In the forum code this object should always be used for root document as 
     well as any items in a collection type resource. 
     """
-    
+
     def __init__(self, **kwargs):
         """
         Calls dictionary init method with any received keyword arguments. Adds
         the controls key afterwards because hypermedia without controls is not 
         hypermedia. 
         """
-        
+
         super(ForumObject, self).__init__(**kwargs)
-        self["@controls"] = {}        
-    
+        self["@controls"] = {}
+
     def add_control_messages_all(self):
         """
         Adds the message-all link to an object. Intended for the document object.
-        """        
-        
+        """
+
         self["@controls"]["forum:messages-all"] = {
             "href": api.url_for(Messages),
             "title": "All messages"
         }
-    
+
     def add_control_users_all(self):
         """
         This adds the users-all link to an object. Intended for the document object.  
         """
-        
+
         self["@controls"]["forum:users-all"] = {
             "href": api.url_for(Users),
             "title": "List users"
         }
-    
+
     def add_control_add_message(self):
         """
         This adds the add-message control to an object. Intended for the  
@@ -156,7 +155,7 @@ class ForumObject(MasonObject):
         lines where all we're basically doing is nested dictionaries to 
         achieve the correctly formed JSON document representation. 
         """
-        
+
         self["@controls"]["forum:add-message"] = {
             "href": api.url_for(Messages),
             "title": "Create message",
@@ -164,15 +163,15 @@ class ForumObject(MasonObject):
             "method": "POST",
             "schema": self._msg_schema()
         }
-    
+
     def add_control_add_user(self):
         """
         This adds the add-user control to an object. Intended ffor the 
         document object. Instead of adding a schema dictionary we are pointing
         to a schema url instead for two reasons: 1) to demonstrate both options;
         2) the user schema is relatively large.
-        """        
-        
+        """
+
         self["@controls"]["forum:add-user"] = {
             "href": api.url_for(Users),
             "title": "Create user",
@@ -180,31 +179,29 @@ class ForumObject(MasonObject):
             "method": "POST",
             "schemaUrl": USER_SCHEMA_URL
         }
-        
-        
+
     def add_control_delete_message(self, msgid):
         """
         Adds the delete control to an object. This is intended for any 
-        object that represents a message. 
-        
+        object that represents a message.
+
         : param str msgid: message id in the msg-N form
         """
-        
+
         self["@controls"]["forum:delete"] = {
             "href": api.url_for(Message, messageid=msgid),  
             "title": "Delete this message",
             "method": "DELETE"
         }
-        
-        
+
     def add_control_edit_message(self, msgid):
         """
         Adds a the edit control to a message object. For the schema we need
-        the one that's intended for editing (it has editor instead of author). 
-        
+        the one that's intended for editing (it has editor instead of author).
+
         : param str msgid: message id in the msg-N form
         """
-        
+
         self["@controls"]["edit"] = {
             "href": api.url_for(Message, messageid=msgid),
             "title": "Edit this message",
@@ -217,25 +214,25 @@ class ForumObject(MasonObject):
         """
         This adds the messages history control to a user which defines a href 
         template for making queries. In Mason query parameters are defined with 
-        a schema just like forms. 
-        
+        a schema just like forms.
+
         : param str user: nickname of the user
-        """        
-        
+        """
+
         self["@controls"]["forum:messages-history"] = {
             "href": api.url_for(History, nickname=user).rstrip("/") + u"{?length,before,after}",
             "title": "Message history",
             "isHrefTemplate": True,
             "schema": self._history_schema()
         }
-        
+
     def add_control_reply_to(self, msgid):
         """
-        Adds a reply-to control to a message. 
-        
+        Adds a reply-to control to a message.
+
         : param str msgid: message id in the msg-N form
-        """        
-        
+        """
+
         self["@controls"]["forum:reply"] = {
             "href": api.url_for(Message, messageid=msgid),
             "title": "Reply to this message",
@@ -243,32 +240,32 @@ class ForumObject(MasonObject):
             "method": "POST",
             "schema": self._msg_schema()
         }
-        
-        
+    """#TODO 4 Implement necessary methods here to implement User and History"""
+
     def _msg_schema(self, edit=False):
         """
         Creates a schema dictionary for messages. If we're editing a message
         the editor field should be set. If the message is new, the author field
         should be set instead. This is controlled by the edit flag.
-        
+
         This schema can also be accessed from the urls /forum/schema/edit-msg/ and 
         /forum/schema/add-msg/.
-        
+
         : param bool edit: is this schema for an edit form
         : rtype:: dict
         """
-        
+
         if edit:
             user_field = "editor"
         else:
             user_field = "author"
-        
+
         schema = {
             "type": "object",
             "properties": {},
             "required": ["headline", "articleBody"]
         }
-        
+
         props = schema["properties"]
         props["headline"] = {
             "title": "Headline",
@@ -286,22 +283,22 @@ class ForumObject(MasonObject):
             "type": "string"
         }
         return schema
-    
+
     def _history_schema(self):
         """
-        Creates a schema dicionary for the messages history query parameters. 
-        
+        Creates a schema dicionary for the messages history query parameters.
+
         This schema can also be accessed from /forum/schema/history-query/
-        
+
         :rtype:: dict
         """
-        
+
         schema = {
             "type": "object",
             "properties": {},
             "required": []
         }
-        
+
         props = schema["properties"]
         props["length"] = {
             "description": "Maximum number of messages returned",
@@ -315,24 +312,22 @@ class ForumObject(MasonObject):
             "description": "Find messages after (timestamp as seconds)",
             "type": "integer"
         }
-        
+
         return schema
 
 #ERROR HANDLERS
-#TODO: Modify this accordding
-# http://soabits.blogspot.no/2013/05/error-handling-considerations-and-best.html
-# I should define a profile for the error.
+
 def create_error_response(status_code, title, message=None):
     """ 
     Creates a: py: class:`flask.Response` instance when sending back an
     HTTP error response
-      
+
     : param integer status_code: The HTTP status code of the response
     : param str title: A short description of the problem
     : param message: A long description of the problem
     : rtype:: py: class:`flask.Response`
     """
-    
+
     resource_url = None
     #We need to access the context in order to access the request.path
     ctx = _request_ctx_stack.top
@@ -340,7 +335,7 @@ def create_error_response(status_code, title, message=None):
         resource_url = request.path
     envelope = MasonObject(resource_url=resource_url)
     envelope.add_error(title, message)
-    
+
     return Response(json.dumps(envelope), status_code, mimetype=MASON+";"+ERROR_PROFILE)
 
 @app.errorhandler(404)
@@ -377,7 +372,7 @@ def close_connection(exc):
     Check if the connection is created. It migth be exception appear before
     the connection is created.
     """
-    
+
     if hasattr(g, "con"):
         g.con.close()
 
@@ -386,7 +381,7 @@ class Messages(Resource):
     """
     Resource Messages implementation
     """
-    
+
     def get(self):
         """
         Get all messages.
@@ -406,19 +401,19 @@ class Messages(Resource):
          * The attribute headline is obtained from the column messages.title
          * The attribute author is obtained from the column messages.sender
         """
-        
+
         #Extract messages from database
         messages_db = g.con.get_messages()
 
         envelope = ForumObject()
         envelope.add_namespace("forum", LINK_RELATIONS_URL)
-        
+
         envelope.add_control("self", href=api.url_for(Messages))
         envelope.add_control_users_all()
-        envelope.add_control_add_message()        
-        
+        envelope.add_control_add_message()
+
         items = envelope["items"] = []
-        
+
         for msg in messages_db:             
             item = ForumObject(id=msg["messageid"], headline=msg["title"])
             item.add_control("self", href=api.url_for(Message, messageid=msg["messageid"]))
@@ -542,7 +537,7 @@ class Message(Resource):
 
         sender = message_db.get("sender", "Anonymous")
         parent = message_db.get("replyto", None)
-        
+
         #FILTER AND GENERATE RESPONSE
         #Create the envelope:
         envelope = ForumObject(
@@ -551,10 +546,10 @@ class Message(Resource):
             author=sender,
             editor=message_db["editor"]            
         )
-        
+
         envelope.add_namespace("forum", LINK_RELATIONS_URL)
         envelope.add_namespace("atom-thread", ATOM_THREAD_PROFILE)
-        
+
         envelope.add_control_delete_message(messageid)
         envelope.add_control_edit_message(messageid)
         envelope.add_control_reply_to(messageid)
@@ -562,12 +557,12 @@ class Message(Resource):
         envelope.add_control("collection", href=api.url_for(Messages))
         envelope.add_control("self", href=api.url_for(Message, messageid=messageid))                
         envelope.add_control("author", href=api.url_for(User, nickname=sender))
-        
+
         if parent:
             envelope.add_control("atom-thread:in-reply-to", href=api.url_for(Message, messageid=parent))
         else:
             envelope.add_control("atom-thread:in-reply-to", href=None)
-        
+
         #RENDER
         return envelope, 200
 
@@ -776,15 +771,15 @@ class Users(Resource):
         #FILTER AND GENERATE THE RESPONSE
        #Create the envelope
         envelope = ForumObject()
-        
+
         envelope.add_namespace("forum", LINK_RELATIONS_URL)
-        
+
         envelope.add_control_add_user()
         envelope.add_control_messages_all()
         envelope.add_control("self", href=api.url_for(Users))
-        
+
         items = envelope["items"] = []
-        
+
         for user in users_db:
             item = ForumObject(
                 nickname=user["nickname"],
@@ -794,7 +789,7 @@ class Users(Resource):
             item.add_control("self", href=api.url_for(User, nickname=user["nickname"]))
             item.add_control("profile", href=FORUM_USER_PROFILE)
             items.append(item)
-        
+
         #RENDER
         return envelope, 200
 
@@ -884,9 +879,9 @@ class Users(Resource):
             signature = request_body["signature"]
         except KeyError:
             return create_error_response(400, "Wrong request format", "Be sure to include all mandatory properties")
-        
+
         # check address if given
-        
+
         address = request_body.get("address", None)
         if address:
             try:                
@@ -895,9 +890,9 @@ class Users(Resource):
                 return create_error_response(400, "Wrong request format", "Incorrect format of address field")
         else:
             residence = None
-        
+
         # pick up rest of the optional fields
-        
+
         image = request_body.get("image", "")
         mobile = request_body.get("telephone", "")
         skype = request_body.get("skype", "")

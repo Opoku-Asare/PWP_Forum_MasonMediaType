@@ -421,7 +421,8 @@ class Messages(Resource):
             items.append(item)
 
         #RENDER
-        return envelope, 200
+        string_data=json.dump(envelope)
+        return Response(string_data,200,mimetype=MASON+";"+FORUM_MESSAGE_PROFILE) 
 
     def post(self):
         """
@@ -530,10 +531,8 @@ class Message(Resource):
         #Get the message from db
         message_db = g.con.get_message(messageid)
         if not message_db:
-            abort(404, message="There is no a message with id %s" % messageid,
-                       resource_type="Message",
-                       resource_url=request.path,
-                       resource_id=messageid)
+            create_error_response(404,"Message not Found",message="There is no a message with id %s" % messageid)
+            
 
         sender = message_db.get("sender", "Anonymous")
         parent = message_db.get("replyto", None)
@@ -564,7 +563,9 @@ class Message(Resource):
             envelope.add_control("atom-thread:in-reply-to", href=None)
 
         #RENDER
-        return envelope, 200
+        string_data=json.dump(envelope)
+        return Response(string_data,200,mimetype=MASON+";"+FORUM_MESSAGE_PROFILE) 
+      
 
     def delete(self, messageid):
         """
@@ -716,7 +717,8 @@ class Message(Resource):
         newmessageid = g.con.append_answer(messageid, title, body,
                                            sender, ipaddress)
         if not newmessageid:
-            abort(500)
+            create_error_response(500,"Reply to message not created")
+           
 
         #Create the Location header with the id of the message created
         url = api.url_for(Message, messageid=newmessageid)
@@ -791,8 +793,9 @@ class Users(Resource):
             items.append(item)
 
         #RENDER
-        return envelope, 200
-
+        string_data=json.dump(envelope)
+        return Response(string_data,200,mimetype=MASON+";"+FORUM_MESSAGE_PROFILE) 
+        
     def post(self):
         """
         Adds a new user in the database.
@@ -845,7 +848,8 @@ class Users(Resource):
         """
 
         if JSON != request.headers.get("Content-Type", ""):
-            abort(415)
+            create_error_response(415,"Request Content Type",message="Please specify request Content Type: " %JSON)
+          
         #PARSE THE REQUEST:
         request_body = request.get_json(force=True)
         if not request_body:
@@ -986,28 +990,26 @@ class User_public(Resource):
         """
         Not implemented
         """
-        abort(501)
+        create_error_response(501," Not implemented")
+      
 
     def put (self, nickname):
         """
         Not implemented
         """
-        abort(501)
-
+        create_error_response(501," Not implemented")
 class User_restricted(Resource):
 
     def get (self, nickname):
         """
         Not implemented
         """
-        abort(501)
-
+        create_error_response(501," Not implemented")
     def put (self, nickname):
         """
         Not implemented
         """
-        abort(501)
-
+        create_error_response(501," Not implemented")
 class History(Resource):
     def get (self, nickname):
         """

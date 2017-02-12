@@ -23,8 +23,8 @@ ERROR_PROFILE = "/profiles/error-profile"
 ATOM_THREAD_PROFILE = "https://tools.ietf.org/html/rfc4685"
 
 # Fill these in
-APIARY_PROFILES_URL = "STUDENT_APIARY_PROJECT/reference/profiles/"
-APIARY_RELS_URL = "STUDENT_APIARY_PROJECT/reference/link-relations/"
+APIARY_PROFILES_URL = "http://docs.pwp2017exercise318.apiary.io/#/reference/profiles/"
+APIARY_RELS_URL = "http://docs.pwp2017exercise318.apiary.io/#/reference/link-relations/"
 
 USER_SCHEMA_URL = "/forum/schema/user/"
 LINK_RELATIONS_URL = "/forum/link-relations/"
@@ -242,6 +242,21 @@ class ForumObject(MasonObject):
         }
     """#TODO 4 Implement necessary methods here to implement User and History"""
 
+    """History already implemented above"""
+    def add_control_get_user(self,nickname):
+       self["@controls"]["forum:get-user"] = {
+            "href": api.url_for(User,nickname=nickname),
+            "title": "Get user",
+            "encoding": "json",
+        } 
+    def add_control_delete_user(self,nickname):
+        self["@controls"]["forum:delete-user"] = {
+            "href": api.url_for(User, nickname=nickname),  
+            "title": "Delete this user",
+            "method": "DELETE"
+        }
+      
+    
     def _msg_schema(self, edit=False):
         """
         Creates a schema dictionary for messages. If we're editing a message
@@ -968,7 +983,12 @@ class User(Resource):
         """
 
         """#TODO 4 Implement the method"""
-        return None
+        user=g.con.get_user(nickname)
+        if user is None:
+             create_error_response(404,"User not found")
+        string_data=json.dump(user)
+        return Response(string_data,200,mimetype=MASON+";"+FORUM_USER_PROFILE) 
+       
 
     def delete(self, nickname):
         """
@@ -982,7 +1002,13 @@ class User(Resource):
         """
 
         """#TODO 4 Implement the method"""
-        return None
+        user=g.con.delete_user(nickname)
+        if user:
+            return  Response(status=204,mimetype=MASON+";"+FORUM_USER_PROFILE)
+        else:
+            create_error_response(404,"Could not delete user")   
+      
+       
 
 class User_public(Resource):
 
@@ -1044,7 +1070,20 @@ class History(Resource):
             Semantic descriptors used in queries: after, before, lenght
         """
         """#TODO 4 Implement the method"""
-        return None
+        data = request.args
+       
+        length = int(data.get("length", "-1"))
+        after = int(data.get("after", "-1"))
+        before = int(data.get("before", "-1"))
+    
+        messages = g.con.get_messages(nickname, length, before, after)
+        if not messages:
+             create_error_response(404,"no message meets the requirement")
+        else:
+            string_data=json.dump(messages)
+            return Response(string_data,200,mimetype=MASON+";"+FORUM_MESSAGE_PROFILE) 
+        
+     
 
 #Add the Regex Converter so we can use regex expressions when we define the
 #routes

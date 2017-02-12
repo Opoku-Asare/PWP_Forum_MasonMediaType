@@ -436,7 +436,7 @@ class Messages(Resource):
             items.append(item)
 
         #RENDER
-        string_data=json.dump(envelope)
+        string_data=json.dumps(envelope)
         return Response(string_data,200,mimetype=MASON+";"+FORUM_MESSAGE_PROFILE) 
 
     def post(self):
@@ -578,7 +578,7 @@ class Message(Resource):
             envelope.add_control("atom-thread:in-reply-to", href=None)
 
         #RENDER
-        string_data=json.dump(envelope)
+        string_data=json.dumps(envelope)
         return Response(string_data,200,mimetype=MASON+";"+FORUM_MESSAGE_PROFILE) 
       
 
@@ -808,7 +808,7 @@ class Users(Resource):
             items.append(item)
 
         #RENDER
-        string_data=json.dump(envelope)
+        string_data=json.dumps(envelope)
         return Response(string_data,200,mimetype=MASON+";"+FORUM_MESSAGE_PROFILE) 
         
     def post(self):
@@ -986,7 +986,7 @@ class User(Resource):
         user=g.con.get_user(nickname)
         if user is None:
              create_error_response(404,"User not found")
-        string_data=json.dump(user)
+        string_data=json.dumps(user)
         return Response(string_data,200,mimetype=MASON+";"+FORUM_USER_PROFILE) 
        
 
@@ -1080,7 +1080,7 @@ class History(Resource):
         if not messages:
              create_error_response(404,"no message meets the requirement")
         else:
-            string_data=json.dump(messages)
+            string_data=json.dumps(messages)
             return Response(string_data,200,mimetype=MASON+";"+FORUM_MESSAGE_PROFILE) 
         
      

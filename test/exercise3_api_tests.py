@@ -834,6 +834,22 @@ class UserTestCase (ResourcesAPITestCase):
 
     """#TODO 4 Implement methods for this class"""
 
+    def test_User_NotFound(self):
+        """
+            checks thats when nickname is not found the correct response code is returned
+        """
+        print "("+self.test_User_NotFound.__name__+")", self.test_User_NotFound.__doc__
+        resp=self.client.get(resources.api.url_for(resources.User,nickame="AsareArashAnas"))
+        self.assertTrue(resp.status_code == 404)
+    def test_User_Deleted(self):
+        """
+            Checks that a user has been delted
+        """
+        user2_nickname = "AxelW"
+        print "("+self.test_User_Deleted.__name__+")", self.test_User_Deleted.__doc__
+        resp=self.client.delete(resources.api.url_for(resources.User,nickame=user2_nickname))
+        self.assertTrue(resp.status_code == 200)
+
 class HistoryTestCase (ResourcesAPITestCase):
 
 
@@ -869,7 +885,13 @@ class HistoryTestCase (ResourcesAPITestCase):
             self.assertEquals(view_point, resources.History)
 
     """#TODO 4 Implement methods for this class"""
-
+    def test_History_Empty(self):
+        """
+            checks that response code is 404 when history is empty
+        """
+        print "("+self.test_History_Empty.__name__+")", self.test_History_Empty.__doc__
+        resp=self.client.get(resources.api.url_for(resources.History,nickame="AsareArashAnas"))
+        self.assertTrue(resp.status_code == 404)    
 if __name__ == "__main__":
     print "Start running tests"
     unittest.main()
